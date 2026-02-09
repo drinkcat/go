@@ -151,6 +151,7 @@ In addition to the build flags, the flags handled by 'go test' itself are:
 	    Compile the test binary to pkg.test in the current directory but do not run it
 	    (where pkg is the last element of the package's import path).
 	    The file name or target directory can be changed with the -o flag.
+	    Implied to be set if -buildmode is c-archive or c-shared.
 
 	-exec xprog
 	    Run the test binary using xprog. The behavior is the same as
@@ -607,6 +608,7 @@ var (
 	testBlockProfile, testCPUProfile, testMemProfile, testMutexProfile, testTrace string // profiling flag that limits test to one package
 
 	testODir = false
+	testCompileOnly = false
 )
 
 // testProfile returns the name of an arbitrary single-package profiling flag
@@ -776,7 +778,12 @@ func runTest(ctx context.Context, cmd *base.Command, args []string) {
 		}
 	}
 
-	if len(pkgs) > 1 && (testC || testO != "") && !base.IsNull(testO) {
+	// Do not attempt to "run" archives or shared libraries.
+	if testC || (cfg.BuildBuildmode == "c-archive" || cfg.BuildBuildmode == "c-shared") {
+		testCompileOnly = true
+	}
+
+	if len(pkgs) > 1 && (testCompileOnly || testO != "") && !base.IsNull(testO) {
 		if testO != "" && !testODir {
 			base.Fatalf("with multiple packages, -o must refer to a directory or %s", os.DevNull)
 		}
@@ -1108,7 +1115,7 @@ func runTest(ctx context.Context, cmd *base.Command, args []string) {
 	}
 
 	// Force benchmarks to run in serial.
-	if !testC && (testBench != "") {
+	if !testCompileOnly && (testBench != "") {
 		// The first run must wait for all builds.
 		// Later runs must wait for the previous run's print.
 		for i, run := range runs {
@@ -1207,7 +1214,7 @@ func builderTest(loaderstate *modload.State, b *work.Builder, ctx context.Contex
 	}
 
 	pmain.Dir = testDir
-	pmain.Internal.OmitDebug = !testC && !testNeedBinary()
+	pmain.Internal.OmitDebug = !testCompileOnly && !testNeedBinary()
 	if pmain.ImportPath == "runtime.test" {
 		// The runtime package needs a symbolized binary for its tests.
 		// See runtime/unsafepoint_test.go.
@@ -1256,7 +1263,7 @@ func builderTest(loaderstate *modload.State, b *work.Builder, ctx context.Contex
 	}
 	buildAction = a
 	var installAction, cleanAction *work.Action
-	if testC || testNeedBinary() {
+	if testCompileOnly || testNeedBinary() {
 		// -c or profiling flag: create action to copy binary to ./test.out.
 		target := filepath.Join(base.Cwd(), testBinary+cfg.ExeSuffix)
 		isNull := false
@@ -1298,7 +1305,7 @@ func builderTest(loaderstate *modload.State, b *work.Builder, ctx context.Contex
 	}
 
 	var vetRunAction *work.Action
-	if testC {
+	if testCompileOnly {
 		printAction = &work.Action{Mode: "test print (nop)", Package: p, Deps: []*work.Action{runAction}} // nop
 		vetRunAction = printAction
 	} else {
