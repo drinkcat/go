@@ -23,6 +23,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"cmd/go/internal/cfg"
 	"cmd/go/internal/fsys"
 	"cmd/go/internal/modload"
 	"cmd/go/internal/str"
@@ -265,6 +266,27 @@ func TestPackagesAndErrors(loaderstate *modload.State, ctx context.Context, done
 		}
 	}
 
+	// If building a c-archive or c-shared, we need to enable CGO and change
+	// build flags accordingly.
+	cgoMode := cfg.BuildBuildmode == "c-archive" || cfg.BuildBuildmode == "c-shared"
+
+	// The generated main also imports testing, regexp, and os.
+	deps := TestMainDeps // cap==len, so safe for append
+	if cgoMode {
+		deps = append(deps, "unsafe")
+		if cfg.BuildContext.Compiler != "gccgo" {
+			deps = append(deps, "runtime/cgo")
+		}
+		deps = append(deps, "syscall")
+	}
+
+	var goFiles, cgoFiles []string
+	if cgoMode {
+		cgoFiles = []string{"_testmain.go"}
+	} else {
+		goFiles = []string{"_testmain.go"}
+	}
+
 	// Arrange for testing.Testing to report true.
 	ldflags := append(p.Internal.Ldflags, "-X", "testing.testBinary=1")
 	gccgoflags := append(p.Internal.Gccgoflags, "-Wl,--defsym,testing.gccgoTestBinary=1")
@@ -274,10 +296,11 @@ func TestPackagesAndErrors(loaderstate *modload.State, ctx context.Context, done
 		PackagePublic: PackagePublic{
 			Name:       "main",
 			Dir:        p.Dir,
-			GoFiles:    []string{"_testmain.go"},
+			GoFiles:    goFiles,
+			CgoFiles:   cgoFiles,
 			ImportPath: p.ImportPath + ".test",
 			Root:       p.Root,
-			Imports:    str.StringList(TestMainDeps),
+			Imports:    str.StringList(deps),
 			Module:     p.Module,
 		},
 		Internal: PackageInternal{
@@ -304,10 +327,8 @@ func TestPackagesAndErrors(loaderstate *modload.State, ctx context.Context, done
 		pmain.setBuildInfo(ctx, loaderstate.Fetcher(), opts.AutoVCS)
 	}
 
-	// The generated main also imports testing, regexp, and os.
 	// Also the linker introduces implicit dependencies reported by LinkerDeps.
 	stk.Push(ImportInfo{Pkg: "testmain"})
-	deps := TestMainDeps // cap==len, so safe for append
 	if cover != nil {
 		deps = append(deps, "internal/coverage/cfile")
 	}
@@ -358,6 +379,7 @@ func TestPackagesAndErrors(loaderstate *modload.State, ctx context.Context, done
 			pmain.Imports = append(pmain.Imports, pxtest.ImportPath)
 			t.ImportXtest = true
 		}
+		t.ExportC = cgoMode
 
 		// Sort and dedup pmain.Imports.
 		// Only matters for go list -test output.
@@ -635,6 +657,7 @@ type testFuncs struct {
 	ImportXtest bool
 	NeedXtest   bool
 	Cover       *TestCover
+	ExportC     bool
 }
 
 // ImportPath returns the import path of the package being tested, if it is within GOPATH.
@@ -792,6 +815,10 @@ var testmainTmpl = lazytemplate.New("main", `
 
 package main
 
+{{if .ExportC}}
+import "C"
+{{end}}
+
 import (
 	"os"
 {{if .TestMain}}
@@ -849,14 +876,19 @@ func init() {
 	testdeps.ImportPath = {{.ImportPath | printf "%q"}}
 }
 
-func main() {
+{{if .ExportC}}//export go_test_main{{end}}
+func go_test_main() int {
 	m := testing.MainStart(testdeps.TestDeps{}, tests, benchmarks, fuzzTargets, examples)
 {{with .TestMain}}
 	{{.Package}}.{{.Name}}(m)
-	os.Exit(int(reflect.ValueOf(m).Elem().FieldByName("exitCode").Int()))
+	return int(reflect.ValueOf(m).Elem().FieldByName("exitCode").Int())
 {{else}}
-	os.Exit(m.Run())
+	return m.Run()
 {{end}}
 }
 
+// Note: c-archive/c-shared still need a main function, but it's not built.
+func main() {
+	os.Exit(go_test_main())
+}
 `)
