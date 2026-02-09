@@ -826,6 +826,9 @@ import (
 {{end}}
 	"testing"
 	"testing/internal/testdeps"
+{{if .ExportC}}
+	"unsafe"
+{{end}}
 {{if .Cover}}
 	"internal/coverage/cfile"
 {{end}}
@@ -876,8 +879,7 @@ func init() {
 	testdeps.ImportPath = {{.ImportPath | printf "%q"}}
 }
 
-{{if .ExportC}}//export go_test_main{{end}}
-func go_test_main() int {
+func goTestMain() int {
 	m := testing.MainStart(testdeps.TestDeps{}, tests, benchmarks, fuzzTargets, examples)
 {{with .TestMain}}
 	{{.Package}}.{{.Name}}(m)
@@ -887,8 +889,26 @@ func go_test_main() int {
 {{end}}
 }
 
-// Note: c-archive/c-shared still need a main function, but it's not built.
+{{if .ExportC}}
+//export go_test_main
+func go_test_main() C.int {
+	return C.int(goTestMain())
+}
+
+//export go_test_main_with_args
+func go_test_main_with_args(argc C.int, argv **C.char) C.int {
+	cStrings := unsafe.Slice(argv, argc)
+	os.Args = make([]string, int(argc))
+	for i, cString := range cStrings {
+		os.Args[i] = C.GoString(cString)
+	}
+	return C.int(goTestMain())
+}
+{{end}}
+
+
+// Note: c-archive/c-shared ("ExportC") still need a main function, but it's not built.
 func main() {
-	os.Exit(go_test_main())
+	os.Exit(goTestMain())
 }
 `)
