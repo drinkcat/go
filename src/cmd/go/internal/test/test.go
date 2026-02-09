@@ -1291,6 +1291,9 @@ func builderTest(loaderstate *modload.State, b *work.Builder, ctx context.Contex
 				Target:  target,
 			}
 			runAction = installAction // make sure runAction != nil even if not running test
+
+			// In c-shared/c-archive mode, we also want to install the header file.
+			b.AddInstallHeaderAction(installAction)
 		}
 	}
 
